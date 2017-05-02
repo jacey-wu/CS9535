@@ -16,7 +16,7 @@
 
 using namespace std;
 
-int main_nah()
+int main()
 {
 
 	const char *csv_file = "./data/static_750.csv";
@@ -43,14 +43,15 @@ int main_nah()
 		{
 			samples[i] = strtod(token.c_str(), NULL);
 			cout << "read in " << i << " sample token: " << token << endl;
+			++i;
 		}
-
-		i++;
 	}
 	cout << "Finished reading file." << endl;
 
 	// GaussianParam *params = run_EM_gpu(samples, size, dim, num_gaus, exit_threshold, 2);
 	run_EM(samples, size, dim, num_gaus, exit_threshold, max_iter);
+
+	delete[] samples;
 
 	return 0;
 }
