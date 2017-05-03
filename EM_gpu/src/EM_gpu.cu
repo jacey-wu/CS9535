@@ -24,7 +24,7 @@ static void CheckCudaErrorAux (const char *, unsigned, const char *, cudaError_t
 
 #define CUDA_CHECK_RETURN(value) CheckCudaErrorAux(__FILE__,__LINE__, #value, value)
 #define WARPSIZE 32
-#define THR_PER_BLOCK 256
+#define THR_PER_BLOCK 64
 #define BLOCKSIZE_S 64
 
 #define MATH_PI 3.14159265358979323846   // pi
@@ -280,12 +280,15 @@ __global__ void mvnpdf_dim3(double *likelihood, double *samples, double *mu_mat,
 __global__ void w_mvnpdf_dim3(double *likelihood, double *samples, double *mu_mat, double *sig_mat,
 		double *weights, int size, int num_gaus)
 {
-	int dim = 3;
 	int lx = blockDim.x * blockIdx.x + threadIdx.x;
 	int ly = blockIdx.y;
 	if (lx < size && ly < num_gaus)
 	{
-		int i;
+		int i, dim = 3;
+		int tid = threadIdx.x;
+		int os_samp = dim * tid;
+		int os_sig = dim * dim * tid;
+
 		/*
 		extern __shared__ double *sdata;
 		extern __shared__ double *x = (double *) &sdata[0];
@@ -301,45 +304,47 @@ __global__ void w_mvnpdf_dim3(double *likelihood, double *samples, double *mu_ma
 		__shared__ double diff[3];
 		__shared__ double sigma[9];
 		__shared__ double inv_sig[9];
-		double weight;
+		double weight = weights[ly];
 
 		// Read data from global to shared mem
 		for (i = 0; i < dim; ++i)
 		{
-			x[i] = samples[lx * dim + i];
-			mu[i] = mu_mat[ly * dim + i];
+			x[os_samp + i] = samples[lx * dim + i];
+			// x[i] = 12;
+			mu[os_samp + i] = mu_mat[ly * dim + i];
 		}
-		for (i = 0; i < dim * dim; ++i) sigma[i] = sig_mat[ly * dim * dim + i];
-		weight = weights[ly];
+		for (i = 0; i < dim * dim; ++i) sigma[os_sig + i] = sig_mat[ly * dim * dim + i];
 
 		// determinant and inverse of sigma
-		double det = sigma[0] * (sigma[4] * sigma[8] - sigma[5] * sigma[7])
-				- sigma[1] * (sigma[3] * sigma[8] - sigma[5] * sigma[6])
-				+ sigma[2] * (sigma[3] * sigma[7] - sigma[4] * sigma[6]);
+		double det = sigma[os_sig + 0] * (sigma[os_sig + 4] * sigma[os_sig + 8] - sigma[os_sig + 5] * sigma[os_sig + 7])
+				   - sigma[os_sig + 1] * (sigma[os_sig + 3] * sigma[os_sig + 8] - sigma[os_sig + 5] * sigma[os_sig + 6])
+				   + sigma[os_sig + 2] * (sigma[os_sig + 3] * sigma[os_sig + 7] - sigma[os_sig + 4] * sigma[os_sig + 6]);
 
-		inv_sig[0] = (sigma[4] * sigma[8] - sigma[5] * sigma[7]) / (double) det;
-		inv_sig[1] = (sigma[2] * sigma[7] - sigma[1] * sigma[8]) / (double) det;
-		inv_sig[2] = (sigma[1] * sigma[5] - sigma[2] * sigma[4]) / (double) det;
-		inv_sig[3] = (sigma[5] * sigma[6] - sigma[3] * sigma[8]) / (double) det;
-		inv_sig[4] = (sigma[0] * sigma[8] - sigma[2] * sigma[6]) / (double) det;
-		inv_sig[5] = (sigma[2] * sigma[3] - sigma[0] * sigma[5]) / (double) det;
-		inv_sig[6] = (sigma[3] * sigma[7] - sigma[4] * sigma[6]) / (double) det;
-		inv_sig[7] = (sigma[1] * sigma[6] - sigma[0] * sigma[7]) / (double) det;
-		inv_sig[8] = (sigma[0] * sigma[4] - sigma[1] * sigma[3]) / (double) det;
+		inv_sig[os_sig + 0] = (sigma[os_sig + 4] * sigma[os_sig + 8] - sigma[os_sig + 5] * sigma[os_sig + 7]) / (double) det;
+		inv_sig[os_sig + 1] = (sigma[os_sig + 2] * sigma[os_sig + 7] - sigma[os_sig + 1] * sigma[os_sig + 8]) / (double) det;
+		inv_sig[os_sig + 2] = (sigma[os_sig + 1] * sigma[os_sig + 5] - sigma[os_sig + 2] * sigma[os_sig + 4]) / (double) det;
+		inv_sig[os_sig + 3] = (sigma[os_sig + 5] * sigma[os_sig + 6] - sigma[os_sig + 3] * sigma[os_sig + 8]) / (double) det;
+		inv_sig[os_sig + 4] = (sigma[os_sig + 0] * sigma[os_sig + 8] - sigma[os_sig + 2] * sigma[os_sig + 6]) / (double) det;
+		inv_sig[os_sig + 5] = (sigma[os_sig + 2] * sigma[os_sig + 3] - sigma[os_sig + 0] * sigma[os_sig + 5]) / (double) det;
+		inv_sig[os_sig + 6] = (sigma[os_sig + 3] * sigma[os_sig + 7] - sigma[os_sig + 4] * sigma[os_sig + 6]) / (double) det;
+		inv_sig[os_sig + 7] = (sigma[os_sig + 1] * sigma[os_sig + 6] - sigma[os_sig + 0] * sigma[os_sig + 7]) / (double) det;
+		inv_sig[os_sig + 8] = (sigma[os_sig + 0] * sigma[os_sig + 4] - sigma[os_sig + 1] * sigma[os_sig + 3]) / (double) det;
 
 		// diff = x[i] - mu[i]
-		for (i = 0; i < dim; ++i) diff[i] = x[i] - mu[i];
+		for (i = 0; i < dim; ++i) diff[os_samp + i] = x[os_samp + i] - mu[os_samp + i];
 
 		// expon = -1/2 * (x - mu)' * inv_sig * (x - mu)
-		double expon = ((diff[0]*inv_sig[0] + diff[1]*inv_sig[3] + diff[2]*inv_sig[6]) * diff[0]
-                      + (diff[0]*inv_sig[1] + diff[1]*inv_sig[4] + diff[2]*inv_sig[7]) * diff[1]
-                      + (diff[0]*inv_sig[2] + diff[1]*inv_sig[5] + diff[2]*inv_sig[8]) * diff[2]) / (double) -2;
+		double expon = ((diff[os_samp + 0]*inv_sig[os_sig + 0] + diff[os_samp + 1]*inv_sig[os_sig + 3] + diff[2]*inv_sig[os_sig + 6]) * diff[os_samp + 0]
+                      + (diff[os_samp + 0]*inv_sig[os_sig + 1] + diff[os_samp + 1]*inv_sig[os_sig + 4] + diff[2]*inv_sig[os_sig + 7]) * diff[os_samp + 1]
+                      + (diff[os_samp + 0]*inv_sig[os_sig + 2] + diff[os_samp + 1]*inv_sig[os_sig + 5] + diff[2]*inv_sig[os_sig + 8]) * diff[os_samp + 2]) / (double) -2;
 
 		// denom = sqrt((2pi)^dim * det(sigma))
 		double denom = sqrt(pow(2 * MATH_PI, dim) * det);
 
-		likelihood[ly * size + lx] = weight * exp(expon) / (double) denom;
-		// likelihood[ly * size + lx] = 100;
+		double value = weight * exp(expon) / (double) denom;
+
+		// likelihood[ly * size + lx] = weight * exp(expon) / (double) denom;
+		likelihood[ly * size + lx] = value;
 	}
 	else likelihood[ly * size + lx] = 0;
 }
@@ -565,9 +570,10 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		block_dim.y = 1;
 		grid_dim.x = size_reduced;
 		grid_dim.y = num_gaus;
-		size_shared_mem = sizeof(double) * (3 * s_dim + 2 * s_dim * s_dim);
+		size_shared_mem = sizeof(double) * THR_PER_BLOCK * (3 * s_dim + 2 * s_dim * s_dim);
 
-		w_mvnpdf_dim3<<<grid_dim, block_dim>>>(d_likelihood, d_samples, d_mu_mat, d_sig_mat, d_weights, s_size, num_gaus);
+		w_mvnpdf_dim3<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_mu_mat, d_sig_mat, d_weights, s_size, num_gaus);
+		cudaDeviceSynchronize();
 
 		// check likelihood
 		CUDA_CHECK_RETURN(cudaMemcpy(likelihood, d_likelihood, size_likelihood, cudaMemcpyDeviceToHost));
@@ -583,6 +589,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		size_shared_mem = sizeof(double) * block_dim.x * block_dim.y;
 
 		normalization<<<grid_dim, block_dim, size_shared_mem, 0>>>(d_likelihood, s_size, num_gaus);
+		cudaDeviceSynchronize();
 
 		// check likelihood
 		CUDA_CHECK_RETURN(cudaMemcpy(likelihood, d_likelihood, size_likelihood, cudaMemcpyDeviceToHost));
