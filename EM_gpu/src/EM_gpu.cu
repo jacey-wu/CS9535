@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
+#include <cfloat>
+
 
 #include "EM_gpu.h"
 extern "C" {
@@ -28,6 +30,8 @@ static void CheckCudaErrorAux (const char *, unsigned, const char *, cudaError_t
 #define BLOCKSIZE_S 64
 
 #define MATH_PI 3.14159265358979323846   // pi
+#define MEAN_PRIOR 5;
+#define VAR_PRIOR 2;
 
 
 /**
@@ -46,7 +50,7 @@ __global__ void marginal_single_reduction(double *g_idata, double *g_odata)
 	int tid = threadIdx.x;
 
 	// Read data into shared memory
-	sdata[tid] = g_idata[tid];
+	sdata[tid] = g_idata[blockIdx.x * blockDim.x + tid];
 	__syncthreads();
 
 	// Reduction in shared memory
@@ -59,12 +63,12 @@ __global__ void marginal_single_reduction(double *g_idata, double *g_odata)
 
 	if (tid < WARPSIZE)
 	{
-		if (tid >= 64) sdata[tid] += sdata[tid + 32];
-		if (tid >= 32) sdata[tid] += sdata[tid + 16];
-		if (tid >= 16) sdata[tid] += sdata[tid + 8];
-		if (tid >= 8) sdata[tid] += sdata[tid + 4];
-		if (tid >= 4) sdata[tid] += sdata[tid + 2];
-		if (tid >= 2) sdata[tid] += sdata[tid + 1];
+		if (blockDim.x >= 64) sdata[tid] += sdata[tid + 32];
+		if (blockDim.x >= 32) sdata[tid] += sdata[tid + 16];
+		if (blockDim.x >= 16) sdata[tid] += sdata[tid + 8];
+		if (blockDim.x >= 8) sdata[tid] += sdata[tid + 4];
+		if (blockDim.x >= 4) sdata[tid] += sdata[tid + 2];
+		if (blockDim.x >= 2) sdata[tid] += sdata[tid + 1];
 	}
 
 	// Write the sum of this block to device memory
@@ -94,16 +98,27 @@ __global__ void marginal_reduction(double *likelihood, double *tmp_odata, int si
 
 		if (tid < WARPSIZE)
 		{
-			if (tid >= 64) sdata[tid] += sdata[tid + 32];
-			if (tid >= 32) sdata[tid] += sdata[tid + 16];
-			if (tid >= 16) sdata[tid] += sdata[tid + 8];
-			if (tid >= 8) sdata[tid] += sdata[tid + 4];
-			if (tid >= 4) sdata[tid] += sdata[tid + 2];
-			if (tid >= 2) sdata[tid] += sdata[tid + 1];
+			if (blockDim.x >= 64) sdata[tid] += sdata[tid + 32];
+			if (blockDim.x >= 32) sdata[tid] += sdata[tid + 16];
+			if (blockDim.x >= 16) sdata[tid] += sdata[tid + 8];
+			if (blockDim.x >= 8) sdata[tid] += sdata[tid + 4];
+			if (blockDim.x >= 4) sdata[tid] += sdata[tid + 2];
+			if (blockDim.x >= 2) sdata[tid] += sdata[tid + 1];
 		}
 
 		// Write the sum of this block to device memory
 		if (tid == 0) tmp_odata[blockIdx.y * gridDim.x + blockIdx.x] = sdata[0];
+
+	}
+}
+
+__global__ void weight_update(double *weights, double *marginals, int num_gaus, int size)
+{
+	int tid = threadIdx.x;
+	if (tid < num_gaus)
+	{
+		if (marginals[tid] == 0) weights[tid] = DBL_MIN;
+		else weights[tid] = marginals[tid] / (double) size;
 	}
 }
 
@@ -133,12 +148,12 @@ __global__ void mu_reduction(double *likelihood, double *samples, double *marg, 
 
 		if (tid < WARPSIZE)
 		{
-			if (tid >= 64) sdata[tid] += sdata[tid + 32];
-			if (tid >= 32) sdata[tid] += sdata[tid + 16];
-			if (tid >= 16) sdata[tid] += sdata[tid + 8];
-			if (tid >= 8) sdata[tid] += sdata[tid + 4];
-			if (tid >= 4) sdata[tid] += sdata[tid + 2];
-			if (tid >= 2) sdata[tid] += sdata[tid + 1];
+			if (blockDim.x >= 64) sdata[tid] += sdata[tid + 32];
+			if (blockDim.x >= 32) sdata[tid] += sdata[tid + 16];
+			if (blockDim.x >= 16) sdata[tid] += sdata[tid + 8];
+			if (blockDim.x >= 8) sdata[tid] += sdata[tid + 4];
+			if (blockDim.x >= 4) sdata[tid] += sdata[tid + 2];
+			if (blockDim.x >= 2) sdata[tid] += sdata[tid + 1];
 		}
 
 		// Write the sum of this block to device memory
@@ -178,12 +193,12 @@ __global__ void sigma_reduction(double *likelihood, double *samples, double *mar
 
 		if (tid < WARPSIZE)
 		{
-			if (tid >= 64) sdata[tid] += sdata[tid + 32];
-			if (tid >= 32) sdata[tid] += sdata[tid + 16];
-			if (tid >= 16) sdata[tid] += sdata[tid + 8];
-			if (tid >= 8) sdata[tid] += sdata[tid + 4];
-			if (tid >= 4) sdata[tid] += sdata[tid + 2];
-			if (tid >= 2) sdata[tid] += sdata[tid + 1];
+			if (blockDim.x >= 64) sdata[tid] += sdata[tid + 32];
+			if (blockDim.x >= 32) sdata[tid] += sdata[tid + 16];
+			if (blockDim.x >= 16) sdata[tid] += sdata[tid + 8];
+			if (blockDim.x >= 8)  sdata[tid] += sdata[tid + 4];
+			if (blockDim.x >= 4)  sdata[tid] += sdata[tid + 2];
+			if (blockDim.x >= 2)  sdata[tid] += sdata[tid + 1];
 		}
 
 		// Write the sum of this block to device memory
@@ -211,12 +226,12 @@ __global__ void single_reduction(double *idata, double *omat)
 
 	if (tid < WARPSIZE)
 	{
-		if (tid >= 64) sdata[tid] += sdata[tid + 32];
-		if (tid >= 32) sdata[tid] += sdata[tid + 16];
-		if (tid >= 16) sdata[tid] += sdata[tid + 8];
-		if (tid >= 8) sdata[tid] += sdata[tid + 4];
-		if (tid >= 4) sdata[tid] += sdata[tid + 2];
-		if (tid >= 2) sdata[tid] += sdata[tid + 1];
+		if (blockDim.x >= 64) sdata[tid] += sdata[tid + 32];
+		if (blockDim.x >= 32) sdata[tid] += sdata[tid + 16];
+		if (blockDim.x >= 16) sdata[tid] += sdata[tid + 8];
+		if (blockDim.x >= 8) sdata[tid] += sdata[tid + 4];
+		if (blockDim.x >= 4) sdata[tid] += sdata[tid + 2];
+		if (blockDim.x >= 2) sdata[tid] += sdata[tid + 1];
 	}
 
 	// Write the sum of this block to device memory
@@ -288,22 +303,22 @@ __global__ void w_mvnpdf_dim3(double *likelihood, double *samples, double *mu_ma
 		int tid = threadIdx.x;
 		int os_samp = dim * tid;
 		int os_sig = dim * dim * tid;
+		int thr_per_block = blockDim.x * blockDim.y;
+
+		extern __shared__ double sdata[];
+		double *x = (double *) &sdata[0];
+		double *mu = (double *) &x[dim * thr_per_block];
+		double *diff = (double *) &mu[dim * thr_per_block];
+		double *sigma = (double *) &diff[dim * thr_per_block];
+		double *inv_sig = (double *) &sigma[dim * dim * thr_per_block];
 
 		/*
-		extern __shared__ double *sdata;
-		extern __shared__ double *x = (double *) &sdata[0];
-		extern __shared__ double *mu = (double *) &x[dim];
-		extern __shared__ double *diff = (double *) &mu[dim];
-		extern __shared__ double *sigma = (double *) &diff[dim];
-		extern __shared__ double *inv_sig = (double *) &sigma[dim * dim];
-		extern __shared__ double weight;
-		*/
-
 		__shared__ double x[3];
 		__shared__ double mu[3];
 		__shared__ double diff[3];
 		__shared__ double sigma[9];
 		__shared__ double inv_sig[9];
+		*/
 		double weight = weights[ly];
 
 		// Read data from global to shared mem
@@ -334,17 +349,33 @@ __global__ void w_mvnpdf_dim3(double *likelihood, double *samples, double *mu_ma
 		for (i = 0; i < dim; ++i) diff[os_samp + i] = x[os_samp + i] - mu[os_samp + i];
 
 		// expon = -1/2 * (x - mu)' * inv_sig * (x - mu)
-		double expon = ((diff[os_samp + 0]*inv_sig[os_sig + 0] + diff[os_samp + 1]*inv_sig[os_sig + 3] + diff[2]*inv_sig[os_sig + 6]) * diff[os_samp + 0]
-                      + (diff[os_samp + 0]*inv_sig[os_sig + 1] + diff[os_samp + 1]*inv_sig[os_sig + 4] + diff[2]*inv_sig[os_sig + 7]) * diff[os_samp + 1]
-                      + (diff[os_samp + 0]*inv_sig[os_sig + 2] + diff[os_samp + 1]*inv_sig[os_sig + 5] + diff[2]*inv_sig[os_sig + 8]) * diff[os_samp + 2]) / (double) -2;
+		double expon = (double) (-1) / 2
+				  *((diff[os_samp + 0]*inv_sig[os_sig + 0] + diff[os_samp + 1]*inv_sig[os_sig + 3] + diff[os_samp + 2]*inv_sig[os_sig + 6]) * diff[os_samp + 0]
+                  + (diff[os_samp + 0]*inv_sig[os_sig + 1] + diff[os_samp + 1]*inv_sig[os_sig + 4] + diff[os_samp + 2]*inv_sig[os_sig + 7]) * diff[os_samp + 1]
+                  + (diff[os_samp + 0]*inv_sig[os_sig + 2] + diff[os_samp + 1]*inv_sig[os_sig + 5] + diff[os_samp + 2]*inv_sig[os_sig + 8]) * diff[os_samp + 2]);
 
 		// denom = sqrt((2pi)^dim * det(sigma))
-		double denom = sqrt(pow(2 * MATH_PI, dim) * det);
+		double denom = sqrt(pow(2 * MATH_PI, dim) * fabs(det));
 
 		double value = weight * exp(expon) / (double) denom;
 
+		if (denom == 0) 		// Sig matrix not invertable
+			likelihood[ly * size + lx] = 0;
+		else if (isinf(value)) 	// Large enough to exceed precision
+			likelihood[ly * size + lx] = DBL_MAX;
+		else
+			likelihood[ly * size + lx] = value;
+
+		if (isnan(value) || isnan(det) || isinf(det))
+		{
+			double tmp1 = expon;
+			double tmp2 = denom;
+			double tmp3 = det;
+			double tmp4 = value;
+			value = tmp1 + tmp2;
+		}
 		// likelihood[ly * size + lx] = weight * exp(expon) / (double) denom;
-		likelihood[ly * size + lx] = value;
+		// likelihood[ly * size + lx] = value;
 	}
 	else likelihood[ly * size + lx] = 0;
 }
@@ -369,9 +400,9 @@ __global__ void normalization(double *likelihood, int size, int num_gaus)
 		for (i = 0; i < num_gaus; ++i)
 			sum = sum + sdata[i * blockDim.x + threadIdx.x];
 
-		if (sum == 0)
-			sum = 1;
-		likelihood[ly * size + lx] = likelihood[ly * size + lx] / sum;
+
+		if (sum == 0) sum = 1;
+		likelihood[ly * size + lx] = sdata[tid] / (double) sum;
 	}
 	else likelihood[ly * size + lx] = 0;
 }
@@ -485,6 +516,11 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	double *mu_mat = (double *)malloc(size_mu_mat);
 	double *sig_mat = (double *)malloc(size_sig_mat);
 
+	// debug vars
+	double *marginals = (double *)malloc(size_n_gaus);
+	double *tmp_data;
+	double *d_tmp_data;
+
 	GaussianParam *output = (GaussianParam *)malloc(sizeof(GaussianParam));
 
 	/* Initialize Gaussian params and weights */
@@ -496,12 +532,12 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	{
 		// Init mu randomly
 		for (d = 0; d < s_dim; d++)
-			mu_mat[i * s_dim + d] = ((double)rand() / RAND_MAX);
+			mu_mat[i * s_dim + d] = ((double)rand() / RAND_MAX) * MEAN_PRIOR;
 
 		// Init sigma randomly. To make sigma positive semi-definite, symmetric, sigma = s'*s
 		inter_sigma = (double *)malloc(size_sigma);
 		for (d = 0; d < dim_squared; d++)
-			inter_sigma[d] = ((double)rand() / RAND_MAX);
+			inter_sigma[d] = ((double)rand() / RAND_MAX) * VAR_PRIOR;
 		trans_sigma = transpose(inter_sigma, s_dim, s_dim);
 		init_sigma = matrix_mult(trans_sigma, inter_sigma, s_dim, s_dim, s_dim);
 		for (d = 0; d < dim_squared; ++d)
@@ -554,14 +590,13 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	/* ---------------- tmp ------------------ */
 	double change = 100;
 	int iter = 0;
-	double *tmp_data;
 	int size_reduced = (THR_PER_BLOCK + s_size - 1) / THR_PER_BLOCK;
 
 	dim3 grid_dim(1, 1, 1);
 	dim3 block_dim(1, 1);
 	int size_shared_mem;
 
-	while (iter < 100)
+	while (iter < max_iter)
 	{
 		/* E-step: Calculate normalized likelihood */
 
@@ -575,7 +610,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		w_mvnpdf_dim3<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_mu_mat, d_sig_mat, d_weights, s_size, num_gaus);
 		cudaDeviceSynchronize();
 
-		// check likelihood
+		// -- check likelihood
 		CUDA_CHECK_RETURN(cudaMemcpy(likelihood, d_likelihood, size_likelihood, cudaMemcpyDeviceToHost));
 		std::cout << "Likelihood at iter = " << iter << std::endl; // PRINT
 		print_mat(likelihood, num_gaus, s_size);
@@ -591,7 +626,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		normalization<<<grid_dim, block_dim, size_shared_mem, 0>>>(d_likelihood, s_size, num_gaus);
 		cudaDeviceSynchronize();
 
-		// check likelihood
+		// -- check normalization
 		CUDA_CHECK_RETURN(cudaMemcpy(likelihood, d_likelihood, size_likelihood, cudaMemcpyDeviceToHost));
 		std::cout << "Normalized Likelihood at iter = " << iter << std::endl; // PRINT
 		print_mat(likelihood, num_gaus, s_size);
@@ -606,26 +641,54 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		grid_dim.x = size_reduced;
 		grid_dim.y = num_gaus;
 
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &tmp_data, sizeof(double) * grid_dim.x * grid_dim.y));
+		tmp_data = (double *) malloc(sizeof(double) * grid_dim.x * grid_dim.y);
+		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y));
 
-		marginal_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, tmp_data, s_size, num_gaus);
-		marginal_single_reduction<<<num_gaus, size_reduced, size_shared_mem>>>(tmp_data, d_marginals);
-		CUDA_CHECK_RETURN(cudaFree(tmp_data));
+		marginal_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_tmp_data, s_size, num_gaus);
+
+		// -- check tmp data of marginals
+		CUDA_CHECK_RETURN(cudaMemcpy(tmp_data, d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y, cudaMemcpyDeviceToHost));
+		std::cout << "tmp marginals at iter = " << iter << std::endl; // PRINT
+		print_mat(tmp_data, grid_dim.y, grid_dim.x);
+		std::cout << std::endl;
+
+		marginal_single_reduction<<<num_gaus, size_reduced, sizeof(double) * size_reduced>>>(d_tmp_data, d_marginals);
+		CUDA_CHECK_RETURN(cudaFree(d_tmp_data));
+
+		// -- check marginals
+		CUDA_CHECK_RETURN(cudaMemcpy(marginals, d_marginals, size_n_gaus, cudaMemcpyDeviceToHost));
+		std::cout << "Marginals at iter = " << iter << std::endl; // PRINT
+		print_mat(marginals, 1, num_gaus);
+		std::cout << std::endl;
+
+		// update weights
+		weight_update<<<1, num_gaus>>>(d_weights, d_marginals, num_gaus, s_size);
+
+		// -- check weights
+		CUDA_CHECK_RETURN(cudaMemcpy(weights, d_weights, size_n_gaus, cudaMemcpyDeviceToHost));
+		std::cout << "Weights at iter = " << iter << std::endl; // PRINT
+		print_mat(weights, 1, num_gaus);
+		std::cout << std::endl;
 
 		// update mu
 		grid_dim.x = size_reduced;
 		grid_dim.y = s_dim;
 		grid_dim.z = num_gaus;
 
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * s_dim));
-		// tmp_data = (double *)malloc(sizeof(double) * grid_dim.x * grid_dim.y * s_dim);
-		mu_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, tmp_data, s_size, num_gaus, s_dim);
+		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * s_dim));
+		mu_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_tmp_data, s_size, num_gaus, s_dim);
 
 		grid_dim.x = s_dim;
 		grid_dim.y = num_gaus;
 		grid_dim.z = 1;
-		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(tmp_data, d_mu_mat);
-		cudaFree(tmp_data);
+		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_tmp_data, d_mu_mat);
+		cudaFree(d_tmp_data);
+
+		// -- check mu_mat
+		CUDA_CHECK_RETURN(cudaMemcpy(mu_mat, d_mu_mat, size_mu_mat, cudaMemcpyDeviceToHost));
+		std::cout << "Mu_mat at iter = " << iter << std::endl; // PRINT
+		print_mat(mu_mat, num_gaus, s_dim);
+		std::cout << std::endl;
 
 		// update sigma
 		grid_dim.x = size_reduced;
@@ -633,14 +696,20 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		grid_dim.z = num_gaus;
 
 		//tmp_data = (double *)malloc(sizeof(double) * grid_dim.x * grid_dim.y * grid_dim.z);
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * grid_dim.z));
-		sigma_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_mu_mat, tmp_data, s_size, num_gaus, s_dim);
+		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * grid_dim.z));
+		sigma_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_mu_mat, d_tmp_data, s_size, num_gaus, s_dim);
 
 		grid_dim.x = s_dim * s_dim;
 		grid_dim.y = num_gaus;
 		grid_dim.z = 1;
-		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(tmp_data, d_sig_mat);
-		cudaFree(tmp_data);
+		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_tmp_data, d_sig_mat);
+		cudaFree(d_tmp_data);
+
+		// -- check sig_mat
+		CUDA_CHECK_RETURN(cudaMemcpy(sig_mat, d_sig_mat, size_sig_mat, cudaMemcpyDeviceToHost));
+		std::cout << "Sig_mat at iter = " << iter << std::endl; // PRINT
+		print_mat(sig_mat, num_gaus, dim_squared);
+		std::cout << std::endl;
 
 		++iter;
 	}
@@ -660,6 +729,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	// weights
 	CUDA_CHECK_RETURN(cudaMemcpy(weights, d_weights, size_n_gaus, cudaMemcpyDeviceToHost));
 	CUDA_CHECK_RETURN(cudaFree(d_weights));
+	std::cout << "Weights:" << std::endl;
 	print_mat(weights, num_gaus, 1);
 
 	// mu matrix
@@ -683,7 +753,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	return output[0];
 }
 
-int main_nah()
+int main_no()
 {
 	int size = sizeof(double) * 3;
 	double h_x[3] = {0.3188, -1.3077, -0.4336};
@@ -717,6 +787,72 @@ int main_nah()
 	std::cout << "pdf = " << pdf << std::endl;
 	std::cout << "wpdf = " << wpdf << std::endl;
 
+	return 0;
+}
+
+__global__ void dumbAdd(double *result, double *a, double *b, int dim)
+{
+
+	int tid = threadIdx.x;
+	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	extern __shared__ double sa[];
+	extern __shared__ double sb[];
+
+	sa[tid] = a[id];
+	sb[dim + tid] = b[id];
+	__syncthreads();
+
+	result[id] = sa[tid] + sb[dim + tid];
+}
+
+__global__ void dumbAdd2(double *result, double *a, double *b, int dim)
+{
+
+	int tid = threadIdx.x;
+	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	extern __shared__ double sdata[];
+
+	double *sa = &sdata[0];
+	double *sb = &sdata[dim];
+
+	sa[tid] = a[id];
+	sb[tid] = b[id];
+	__syncthreads();
+
+	result[id] = sa[tid] + sb[tid];
+}
+
+int main_2()
+{
+	int dim = 10;
+	int size = sizeof(double) * dim;
+	double a[size];
+	double b[size];
+	double result[size];
+	for (int i = 0; i < dim; ++i)
+	{
+		a[i] = 10 + i;
+		b[i] = 100 + i;
+	}
+
+	double *d_a, *d_b, *d_result;
+	cudaMalloc((void **)&d_a, size);
+	cudaMalloc((void **)&d_b, size);
+	cudaMalloc((void **)&d_result, size);
+	cudaMemset(d_result, 0, size);
+
+	cudaMemcpy(d_a, a, size, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_b, b, size, cudaMemcpyHostToDevice);
+
+	int thr_per_block = 5;
+	dumbAdd2<<<2, thr_per_block, thr_per_block * 2>>>(d_result, d_a, d_b, dim);
+
+	cudaMemcpy(result, d_result, size, cudaMemcpyDeviceToHost);
+	for (int i = 0; i < dim; i++) std::cout << result[i] << std::endl;
+
+	cudaFree(d_a);
+	cudaFree(d_b);
+	cudaFree(d_result);
 	return 0;
 }
 

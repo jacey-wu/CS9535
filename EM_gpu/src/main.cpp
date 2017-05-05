@@ -21,10 +21,10 @@ int main()
 
 	const char *csv_file = "./data/static_750.csv";
 	const int dim = 3;
-	const int size = 750;
+	const int size = 250;
 	const int num_gaus = 3;
 	double exit_threshold = 1e-20;
-	const int max_iter = 10;
+	const int max_iter = 100;
 	int i;
 
 	// Read in samples
@@ -35,14 +35,14 @@ int main()
 	if (! file.good()) cout << "Not able to open file " << csv_file << endl;
 
 	i = 0;
-	while (file.good()) {
+	while (file.good() && i < size * dim) {
 		getline(file, line);
 		stringstream ss(line);
 
 		while (getline(ss, token, ','))
 		{
 			samples[i] = strtod(token.c_str(), NULL);
-			cout << "read in " << i << " sample token: " << token << endl;
+			cout << "read in " << i/3 << " sample token: " << token << endl;
 			++i;
 		}
 	}
