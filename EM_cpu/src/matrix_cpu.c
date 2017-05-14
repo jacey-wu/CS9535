@@ -1,82 +1,19 @@
 #include <stdio.h>
 #include <math.h>
-//#include <conio.h>
 #include <stdlib.h>
 #include <malloc.h>
+
 #include "matrix_cpu.h"
 
 double *matrix_add(double *result, double *A, double *B, int m, int n);
-double *matrix_subtr(double *A, double *B, int m, int n);
+double *matrix_subtr(double *result, double *A, double *B, int m, int n);
 double *matrix_scalar_mult(double *result, double *matrix, double scalar, int m, int n);
-double *matrix_mult(double *A, double *B, int m, int p, int n);
-double *transpose(double *matrix, int m, int n);
-double *scalar_transpose(double *matrix, int m, int n, double scalar);
+double *matrix_mult(double *result, double *A, double *B, int m, int p, int n);
+double *transpose(double *result, double *matrix, int m, int n);
+double *scalar_transpose(double *result, double *matrix, int m, int n, double scalar);
 double determinant(double*, int);
-double *inverse(double*, int);
+double *inverse(double *result, double* matrix, int dim);
 void print_mat(double *matrix, int m, int n);
-
-int main3()
-{
-  int k;
-  double d, num;
-  int i,j, idx;
-  printf("-------------------------------------------------------------\n");
-  printf("----------------made by C code champ ------------------------\n");
-  printf("-------------------------------------------------------------\n");
-  printf("\n  C Program to find inverse of Matrix\n\n");	
-  printf("Enter the order of the Matrix : ");
-  scanf("%d",&k);
-  printf("Enter the elements of %d X %d Matrix : \n", k, k);
-  double* a = (double *)malloc(sizeof(double) * k * k);
-
-  for (i = 0; i<k; i++)
-    {
-     for (j = 0; j<k; j++)
-       {
-			scanf("%lf", &num);
-			a[i * k + j] = num;
-        }
-    }
-  // matrix inverse test
-  d=determinant(a,k);
-  printf("Determinant of the Matrix = %f",d);
-  if (d==0)
-   printf("\nInverse of Entered Matrix is not possible\n");
-  else 
-  {
-	  double *inv_mat = inverse(a, k);
-	  printf("\n\n\nThe inverse of matrix is : \n");
-
-	  for (i = 0; i<k; i++)
-	  {
-		  for (j = 0; j<k; j++)
-		  {
-			  idx = i * k + j;
-			  printf("\t%f", inv_mat[idx]);
-		  }
-		  printf("\n");
-	  }
-  }
-
-  // matrix mult test
-  /*
-  double* b = (double *)malloc(sizeof(double) * k * k);
-
-  for (i = 0; i<k; i++)
-  {
-	  for (j = 0; j<k; j++)
-	  {
-		  scanf("%lf", &num);
-		  b[i * k + j] = num;
-	  }
-  }
-  double *result = matrix_mult(a, b, k, k, k);
-  print_mat(result, k);
-  */
-  printf("\n\n**** Thanks for using the program!!! ****");
-  getchar();
-  return 0;
-}
 
 /* Matrix addition */
 double *matrix_add(double *result, double *A, double *B, int m, int n)
@@ -87,9 +24,8 @@ double *matrix_add(double *result, double *A, double *B, int m, int n)
 }
 
 /* Matrix subtraction */
-double *matrix_subtr(double *A, double *B, int m, int n)
+double *matrix_subtr(double *result, double *A, double *B, int m, int n)
 {
-	double *result = (double *) malloc(sizeof(double) * m * n);
 	for (int i = 0; i < m * n; ++i)
 		result[i] = A[i] - B[i];
 	return result;
@@ -104,10 +40,9 @@ double *matrix_scalar_mult(double *result, double *matrix, double scalar, int m,
 	return result;
 }
 
-double *matrix_mult(double *A, double *B, int m, int p, int n)
+double *matrix_mult(double *result, double *A, double *B, int m, int p, int n)
 {
 	int i, j, k;
-	double *result = (double *)malloc(sizeof(double) * m * n);
 	for (i = 0; i < m; i++)
 		for (j = 0; j < n; j++)
 		{
@@ -161,17 +96,17 @@ double determinant(double *matrix, int dim)
 }
 
 /* For calculating the inverse of the matrix */
-double *inverse(double *matrix, int dim)
+double *inverse(double *inverse_matrix, double *matrix, int dim)
 {
 	int sub_dim = dim - 1;
-	double *inverse_matrix;
 	double *sub_matrix = (double *)malloc(sizeof(double) * sub_dim * sub_dim);
 	double *inter_matrix = (double *)malloc(sizeof(double) * dim * dim);
 	double det = determinant(matrix, dim);
 
 	if (det == 0)
 	{
-		printf("\nInverse of covariance matrix SIGMA is not possible\n");
+		printf("\nInverse of covariance matrix SIGMA is not possible.\n");
+		printf("This may be caused by randomness in parameter initialization. Please restart the program.\n");
 		return NULL;
 	}
 
@@ -206,22 +141,22 @@ double *inverse(double *matrix, int dim)
 			inter_matrix[p * dim + q] = pow(-1, q + p) * determinant(sub_matrix, sub_dim);
 		}
 	}
-	inverse_matrix = scalar_transpose(inter_matrix, dim, dim, 1 / (double) det);
+	scalar_transpose(inverse_matrix, inter_matrix, dim, dim, 1 / (double) det);
 	free(sub_matrix);
 	free(inter_matrix);
 	return inverse_matrix;
 }
 
 /*Finding transpose of matrix*/
-double *transpose(double *matrix, int m, int n)
+double *transpose(double *result, double *matrix, int m, int n)
 {
-	return scalar_transpose(matrix, m, n, 1);
+	return scalar_transpose(result, matrix, m, n, 1);
 }
 
 /*Finding transpose of matrix and multiply a scalar to each entry */
-double *scalar_transpose(double *matrix, int m, int n, double scalar)
+double *scalar_transpose(double *result, double *matrix, int m, int n, double scalar)
 {
-	double *result = (double *)malloc(sizeof(double) * n * m);
+	// double *result = (double *)malloc(sizeof(double) * n * m);
 	for (int i = 0; i < m; i++)
 		for (int j = 0; j < n; j++)
 			result[j * m + i] = scalar * matrix[i * n + j];

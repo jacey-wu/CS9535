@@ -18,13 +18,12 @@ using namespace std;
 
 int main()
 {
-
 	const char *csv_file = "./data/static_750.csv";
 	const int dim = 3;
-	const int size = 250;
+	const int size = 750;
 	const int num_gaus = 3;
 	double exit_threshold = 1e-20;
-	const int max_iter = 100;
+	const int max_iter = 10000;
 	int i;
 
 	// Read in samples
@@ -42,14 +41,16 @@ int main()
 		while (getline(ss, token, ','))
 		{
 			samples[i] = strtod(token.c_str(), NULL);
-			cout << "read in " << i/3 << " sample token: " << token << endl;
+			// cout << "read in " << i/3 << " sample token: " << token << endl;
 			++i;
 		}
 	}
 	cout << "Finished reading file." << endl;
 
+	cout << "Start EM_GPU" << endl;
 	// GaussianParam *params = run_EM_gpu(samples, size, dim, num_gaus, exit_threshold, 2);
 	run_EM(samples, size, dim, num_gaus, exit_threshold, max_iter);
+	cout << "End EM_GPU" << endl;
 
 	delete[] samples;
 

@@ -2,17 +2,19 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 #include "EM_cpu.h"
 
 
-void print_params(GaussianPara *params, int num_models, int dim)
+void print_params(GaussianParam *params, int num_models, int dim)
 {
+	printf("-- The Gaussian parameters estimated --\n");
 	for (int i = 0; i < num_models; i++)
 	{
-		printf("The %d Guassian model: \n MU = \n", i);
+		printf("The %d Guassian model: \nMU = \n", i + 1);
 		for (int d = 0; d < dim; d++) printf("\t%lf", params[i].mu[d]);
-		printf("\n SIGMA = \n");
+		printf("\nSIGMA = \n");
 		for (int p = 0; p < dim; p++)
 		{
 			for (int q = 0; q < dim; q++)
@@ -28,16 +30,15 @@ int main(int argc, char *argv[])
 	const int dim = 3;
 	const int size = 750;
 	const int num_gaus = 3;
+	const int num_iter = 1000;
 	double exit_threshold = 1e-20;
 
-	// Read samples
+	// Read samples from csv file
 	char buffer[1024];
 	char *token;
 	int i, j;
 	double *sample;
 	double **samples = (double **)malloc(sizeof(double *) * size);
-
-	//double abc[size][dim];
 
 	FILE *fstream = fopen(csv_file, "r");
 	if (fstream == NULL)
@@ -54,7 +55,7 @@ int main(int argc, char *argv[])
 		token = strtok(buffer, ",");
 		while (token != NULL)
 		{
-			printf("read in %d sample token: %s\n", i, token);
+			// printf("read in %d sample token: %s\n", i, token);
 			sample[j] = atof(token);
 			token = strtok(NULL, ",");
 			j++;
@@ -64,11 +65,25 @@ int main(int argc, char *argv[])
 	}
 
 	// run Expectation-Maximization algo
-	GaussianPara *params = run_EM_cpu(samples, size, dim, num_gaus, exit_threshold, 1000);
+	printf("CPU EM starting ... \n");
 
+	clock_t start = clock(), diff;
+	GaussianParam *params = run_EM_cpu(samples, size, dim, num_gaus,
+			exit_threshold, num_iter);
+	diff = clock() - start;
+	int msec = diff * 1000 / CLOCKS_PER_SEC;
+
+	printf("CPU EM finished\n\n");
+
+	// Experiment summary
+	printf("-- Experiment summary --\n");
+	printf("SampleDim = %d X %d (double), NumGaussians = %d, ", size, dim, num_gaus);
+	printf("Time = %d ms, NumIter = %d\n\n", msec, num_iter);
+
+	// Print calculated params
 	print_params(params, num_gaus, dim);
 
-	printf("End of program\n");
+	printf("Note: Randomly initializing predicted params might cause 'nan' in final estimation.\nPlease re-run program to avoid influences of inproper initialization.\n");
 
 	getchar();
 	return 0;

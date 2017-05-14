@@ -6,21 +6,36 @@
 #include "EM_cpu.h"
 #include "matrix_cpu.h"
 
+/* List of functions */
 double mvnpdf(double *x, double *mu, double *sigma, int dim);
 double eval_likelihood(double *prev, double *curr, int m, int n);
-GaussianPara *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, double threshold, int max_iter);
+GaussianParam *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, double threshold, int max_iter);
 
 
+/*
+ *
+ *
+ */
 double mvnpdf(double *x, double *mu, double *sigma, int dim)
 {
+	// Allocate memory
 	double exponent, denom;
-	double *res_vec_subtr = matrix_subtr(x, mu, dim, 1);
-	double *res_trans = transpose(res_vec_subtr, dim, 1);
-	double *res_mat_inv = inverse(sigma, dim);
-	double *res_mat_mult = matrix_mult(res_trans, res_mat_inv, 1, dim, dim);
-	double *res_mat_mult2 = matrix_mult(res_mat_mult, res_vec_subtr, 1, dim, 1);
+	double *res_vec_subtr = (double *) malloc(sizeof(double) * dim * 1);
+	double *res_trans = (double *) malloc(sizeof(double) * dim * 1);
+	double *res_mat_inv = (double *) malloc(sizeof(double) * dim * dim);
+	double *res_mat_mult = (double *) malloc(sizeof(double) * dim * dim);
+	double *res_mat_mult2 = (double *)malloc(sizeof(double));
+
+	//
+	matrix_subtr(res_vec_subtr, x, mu, dim, 1);
+	transpose(res_trans, res_vec_subtr, dim, 1);
+	inverse(res_mat_inv, sigma, dim);
+	matrix_mult(res_mat_mult, res_trans, res_mat_inv, 1, dim, dim);
+	matrix_mult(res_mat_mult2, res_mat_mult, res_vec_subtr, 1, dim, 1);
+
 	exponent = (-1 / (double) 2) * res_mat_mult2[0];
 	denom = sqrt(pow(2 * MATH_PI, dim) * determinant(sigma, dim));
+
 	free(res_vec_subtr);
 	free(res_trans);
 	free(res_mat_inv);
@@ -39,38 +54,50 @@ double eval_likelihood(double *prev, double *curr, int m, int n)
 	return diff;
 }
 
-GaussianPara *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, double threshold, int max_iter)
+GaussianParam *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, double threshold, int max_iter)
 {
-	GaussianPara *output = (GaussianPara *) malloc(sizeof(GaussianPara) * num_gaus);
-	double *weights = (double *)malloc(sizeof(double) * num_gaus);
-	double *likelihood = (double *) malloc(sizeof(double) * s_size * num_gaus);
-	double *likelihood_prev = (double *)malloc(sizeof(double) * s_size * num_gaus);
+	GaussianParam *output = (GaussianParam *) malloc(sizeof(GaussianParam) * num_gaus);
 
-	double change_L = INFINITY; likelihood_prev[0] = INFINITY;
-	double normalization, marginal;
-	double *mean_diff, *inter_sigma, *trans_sigma;
+	// Sizes for memory allocation
+	int size_n_gaus = sizeof(double) * num_gaus;
+	int size_n_samp = sizeof(double) * s_size;
+	int size_mu = sizeof(double) * s_dim;
+	int size_sigma = sizeof(double) * s_dim * s_dim;
+	int size_likelihood = sizeof(double) * num_gaus * s_size;
+
+	double *mean_diff = (double *)malloc(size_mu);
+	double *weights = (double *)malloc(size_n_gaus);
+	double *likelihood = (double *) malloc(size_likelihood);
+	double *likelihood_prev = (double *)malloc(size_likelihood);
+
+	double normalization, marginals, change_L = INFINITY; likelihood_prev[0] = INFINITY;
+	double *inter_sigma, *trans_sigma;
 	int i, j, k, d, iter = 0;
 	double pdf;
 
 	/* Initialize Gaussian params and weights */
 	time_t t;
-	GaussianPara gauPara;
+	GaussianParam gauPara;
 	srand((unsigned) time(&t)); // seed random number generator
+	inter_sigma = (double *)malloc(size_sigma);
+	trans_sigma = (double *)malloc(size_sigma);
 
 	for (i = 0; i < num_gaus; i++)
 	{
+		// Init mu randomly
 		output[i].mu = malloc(sizeof(double) * s_dim);
 		for (d = 0; d < s_dim; d++)
 			output[i].mu[d] = ((double)rand() / RAND_MAX) * MEAN_PRIOR;
 
-		inter_sigma = malloc(sizeof(double) * s_dim * s_dim);
-		for (d = 0; d < s_dim * s_dim; d++) inter_sigma[d] = ((double)rand() / RAND_MAX) * VAR_PRIOR;
-		trans_sigma = transpose(inter_sigma, s_dim, s_dim);
-		output[i].sigma = matrix_mult(trans_sigma, inter_sigma, s_dim, s_dim, s_dim);
+		// Init sigma randomly
+		output[i].sigma = malloc(size_sigma);
+		for (d = 0; d < s_dim * s_dim; d++)
+			inter_sigma[d] = ((double)rand() / RAND_MAX) * VAR_PRIOR;
+		// Let sigma = T'* T so that sigma is positive-definite
+		transpose(trans_sigma, inter_sigma, s_dim, s_dim);
+		matrix_mult(output[i].sigma, trans_sigma, inter_sigma, s_dim, s_dim, s_dim);
 
-		free(inter_sigma);
-		free(trans_sigma);
-
+		// Init weights uniformly
 		weights[i] = 1 / (double) num_gaus;
 	}
 
@@ -96,7 +123,7 @@ GaussianPara *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, 
 				likelihood[i * s_size + j] = weights[i] * mvnpdf(samples[j], output[i].mu, output[i].sigma, s_dim) / normalization;
 		}
 
-		//print_mat(likelihood, num_gaus, s_size);
+		// print_mat(likelihood, num_gaus, s_size);
 
 		// M-step: update weights, means, covarience matrices
 		for (i = 0; i < num_gaus; i++)
@@ -105,38 +132,40 @@ GaussianPara *run_EM_cpu(double **samples, int s_size, int s_dim, int num_gaus, 
 			for (d = 0; d < s_dim; d++) output[i].mu[d] = 0;            // Rest components of mean
 			for (d = 0; d < s_dim * s_dim; d++) output[i].sigma[d] = 0; // Rest components of covariance
 
-			marginal = 0;
-			for (j = 0; j < s_size; j++) marginal += likelihood[i * s_size + j];
+			marginals = 0;
+			for (j = 0; j < s_size; j++) marginals += likelihood[i * s_size + j];
 
 			// Update weight
-			weights[i] = marginal / s_size;
+			weights[i] = marginals / s_size;
 
 			// Update mean
 			for (j = 0; j < s_size; j++)
 				for (d = 0; d < s_dim; d++)
 					output[i].mu[d] += likelihood[i * s_size + j] * samples[j][d];
-			for (d = 0; d < s_dim; d++) output[i].mu[d] /= marginal;
+			for (d = 0; d < s_dim; d++) output[i].mu[d] /= marginals;
 
 			// Update covariance matrix
 			for (j = 0; j < s_size; j++)
 			{
-				mean_diff = matrix_subtr(samples[j], output[i].mu, s_dim, 1);
-				inter_sigma = matrix_mult(mean_diff, mean_diff, s_dim, 1, s_dim);
-				inter_sigma = matrix_scalar_mult(inter_sigma, inter_sigma, likelihood[i * s_size + j] / marginal, s_dim, s_dim);
+				matrix_subtr(mean_diff, samples[j], output[i].mu, s_dim, 1);
+				matrix_mult(inter_sigma, mean_diff, mean_diff, s_dim, 1, s_dim);
+				matrix_scalar_mult(inter_sigma, inter_sigma, likelihood[i * s_size + j] / marginals, s_dim, s_dim);
 				matrix_add(output[i].sigma, output[i].sigma, inter_sigma, s_dim, s_dim);
-
-				free(mean_diff);
-				free(inter_sigma);
 			}
 		}
 
-		change_L = eval_likelihood(likelihood_prev, likelihood, num_gaus, s_size);
-
+		// change_L = eval_likelihood(likelihood_prev, likelihood, num_gaus, s_size);
+		change_L = 10;
 		// Save likelihood matrix
-		for (k = 0; k < s_size * num_gaus; k++)
-			likelihood_prev[k] = likelihood[k];
+		// for (k = 0; k < s_size * num_gaus; k++)
+		// 	  likelihood_prev[k] = likelihood[k];
+		//printf("ITER = %d\nchange_L = %e\n", iter, change_L);
 		iter++;
-		printf("ITER = %d\nchange_L = %e", iter, change_L);
 	}
+
+	free(mean_diff);
+	free(inter_sigma);
+	free(trans_sigma);
+
 	return output;
 }
