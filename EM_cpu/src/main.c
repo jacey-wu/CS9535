@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
 	const int dim = 3;
 	const int size = 750;
 	const int num_gaus = 3;
-	const int num_iter = 1000;
+	const int num_iter = 10000;
 	double exit_threshold = 1e-20;
 
 	// Read samples from csv file
@@ -71,14 +71,14 @@ int main(int argc, char *argv[])
 	GaussianParam *params = run_EM_cpu(samples, size, dim, num_gaus,
 			exit_threshold, num_iter);
 	diff = clock() - start;
-	int msec = diff * 1000 / CLOCKS_PER_SEC;
+	float msec = diff * 1000 / CLOCKS_PER_SEC;
 
 	printf("CPU EM finished\n\n");
 
 	// Experiment summary
 	printf("-- Experiment summary --\n");
 	printf("SampleDim = %d X %d (double), NumGaussians = %d, ", size, dim, num_gaus);
-	printf("Time = %d ms, NumIter = %d\n\n", msec, num_iter);
+	printf("TotTime = %.4f ms; NumIter = %d; TimePerIter = %.4f ms\n\n", msec, num_iter, msec / num_iter);
 
 	// Print calculated params
 	print_params(params, num_gaus, dim);

@@ -11,6 +11,11 @@
 #include <cstdlib>
 #include <string>
 #include <math.h>
+#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
+
+#include "utillib/helper_string.h"
+#include "utillib/helper_cuda.h"
 
 #include "EM_gpu.h"
 
@@ -18,6 +23,27 @@ using namespace std;
 
 int main()
 {
+	/* Get GPU statistics */
+	int devID = 0; 			// Assuming using 1 GPU
+    cudaDeviceProp deviceProp;
+
+    // get number of SMs on this GPU
+    checkCudaErrors(cudaGetDevice(&devID));
+    checkCudaErrors(cudaGetDeviceProperties(&deviceProp, devID));
+
+    // compute the scaling factor (for GPUs with fewer MPs)
+    float scale_factor, total_tiles;
+    scale_factor = max((192.0f / (_ConvertSMVer2Cores(deviceProp.major, deviceProp.minor) * (float)deviceProp.multiProcessorCount)), 1.0f);
+
+    printf("-- GPU statistics --\n");
+    printf("Device %d: \"%s\"\n", devID, deviceProp.name);
+    printf("SM Capability %d.%d detected:\n", deviceProp.major, deviceProp.minor);
+    printf("[%s] has %d MP(s) x %d (Cores/MP) = %d (Cores)\n\n",
+           deviceProp.name, deviceProp.multiProcessorCount,
+           _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
+           _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor) * deviceProp.multiProcessorCount);
+
+    /* Read in sample data */
 	const char *csv_file = "./data/static_750.csv";
 	const int dim = 3;
 	const int size = 750;
@@ -26,12 +52,12 @@ int main()
 	const int max_iter = 10000;
 	int i;
 
-	// Read in samples
 	double *samples = new double[size * dim];
 	string line, token;
 	ifstream file(csv_file);
 
-	if (! file.good()) cout << "Not able to open file " << csv_file << endl;
+	if (! file.good()) cout << "> Not able to open file " << csv_file << endl;
+	else cout << "> Start reading input file : " << csv_file << endl;
 
 	i = 0;
 	while (file.good() && i < size * dim) {
@@ -41,18 +67,18 @@ int main()
 		while (getline(ss, token, ','))
 		{
 			samples[i] = strtod(token.c_str(), NULL);
-			// cout << "read in " << i/3 << " sample token: " << token << endl;
 			++i;
 		}
 	}
-	cout << "Finished reading file." << endl;
+	cout << "> Finished reading " << i/dim << " samples" << endl;
 
-	cout << "Start EM_GPU" << endl;
-	// GaussianParam *params = run_EM_gpu(samples, size, dim, num_gaus, exit_threshold, 2);
-	run_EM(samples, size, dim, num_gaus, exit_threshold, max_iter);
-	cout << "End EM_GPU" << endl;
+	cout << "> Start executing EM_GPU...\n" << endl;
+
+	printf("-- Experiment summary --\n");
+	run_EM(samples, size, dim, num_gaus, exit_threshold, max_iter, false);
+
+	cout << "> Finished EM_GPU" << endl;
 
 	delete[] samples;
-
 	return 0;
 }
