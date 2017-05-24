@@ -44,12 +44,12 @@ int main()
            _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor) * deviceProp.multiProcessorCount);
 
     /* Read in sample data */
-	const char *csv_file = "./data/static_750.csv";
+	const char *csv_file = "./data/static_G3_N100000.csv";
 	const int dim = 3;
-	const int size = 750;
+	const int size = 50000;
 	const int num_gaus = 3;
 	double exit_threshold = 1e-20;
-	const int max_iter = 10000;
+	const int max_iter = 5000;
 	int i;
 
 	double *samples = new double[size * dim];

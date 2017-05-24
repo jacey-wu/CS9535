@@ -28,8 +28,8 @@ static void CheckCudaErrorAux (const char *, unsigned, const char *, cudaError_t
 
 #define CUDA_CHECK_RETURN(value) CheckCudaErrorAux(__FILE__,__LINE__, #value, value)
 #define WARPSIZE 32
-#define THR_PER_BLOCK_SM 128
-#define THR_PER_BLOCK 256
+#define THR_PER_BLOCK_SM 128 // 128
+#define THR_PER_BLOCK 256 // 256
 
 #define MATH_PI 3.14159265358979323846   // pi
 #define MEAN_PRIOR 5;
@@ -116,10 +116,14 @@ __global__ void weight_update(double *weights, double *marginals, int num_gaus, 
 		double sum = 0;
 		for (int i = 0; i < num_gaus; ++i) sum += marginals[i];
 
+		double value = marginals[tid] / (double) sum;
+
 		if (marginals[tid] == 0)
 			weights[tid] = DBL_MIN;
+		else if (isnan(value))
+			weights[tid] = 1 / (double) 3;
 		else
-			weights[tid] = marginals[tid] / (double) sum;
+			weights[tid] = value;
 	}
 }
 
@@ -364,15 +368,27 @@ __global__ void w_mvnpdf_dim3(double *likelihood, double *samples, double *mu_ma
 
 		double value = weight * exp(expon) / (double) denom;
 
+		/*
 		if (det == 0) 							// Sig matrix not invertable
 			likelihood[ly * size + lx] = 0;
 		else if (isinf(value)) 						// Large enough to exceed precision
 			likelihood[ly * size + lx] = DBL_MAX;
 		else
 			likelihood[ly * size + lx] = value;
+		*/
+
+		/*
+		if (value == 0)
+			likelihood[ly * size + lx] = 1e-300;
+		else if (det != 0 && !isnan(value) && !isinf(value))
+			likelihood[ly * size + lx] = value;
+		*/
+
+		if (det != 0 && !isnan(value) && !isinf(value))
+			likelihood[ly * size + lx] = value;
 	}
 	else
-		likelihood[ly * size + lx] = 0;
+		likelihood[ly * size + lx] = 100;
 }
 
 __global__ void normalization(double *likelihood, int size, int num_gaus)
@@ -422,6 +438,9 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	int size_mu_mat = sizeof(double) * num_gaus * s_dim;
 	int size_sig_mat = sizeof(double) * num_gaus * dim_squared;
 
+	int size_reduced = (THR_PER_BLOCK + s_size - 1) / THR_PER_BLOCK;
+	int size_reduced_sm = (THR_PER_BLOCK_SM + s_size - 1) / THR_PER_BLOCK_SM;
+
 	/* Allocate and initialize host (CPU) memory */
 	double *likelihood = (double *) malloc(size_likelihood);
 	double *likelihood_prev = (double *)malloc(size_likelihood);
@@ -431,8 +450,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 
 	// debug vars
 	double *marginals = (double *)malloc(size_n_gaus);
-	// double *tmp_data;
-	double *d_tmp_data;
+	double *stage_marginals;
 
 	GaussianParam *output = (GaussianParam *)malloc(sizeof(GaussianParam));
 
@@ -467,6 +485,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 
 	/* Allocate device memory & copy data from host to device */
 	double *d_samples, *d_weights, *d_likelihood, *d_mu_mat, *d_sig_mat, *d_marginals;
+	double *d_marginals_tmp, *d_mu_tmp, *d_sig_tmp;
 
 	// samples
 	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_samples, size_n_samp * s_dim));
@@ -483,14 +502,20 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	// mu matrix
 	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_mu_mat, size_mu_mat));
 	CUDA_CHECK_RETURN(cudaMemcpy(d_mu_mat, mu_mat, size_mu_mat, cudaMemcpyHostToDevice));
+	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_mu_tmp, sizeof(double) * size_reduced * s_dim * num_gaus));
+	CUDA_CHECK_RETURN(cudaMemset( d_mu_tmp, 0, sizeof(double) * size_reduced * s_dim * num_gaus));
 
 	// sigma matrix
 	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_sig_mat, size_sig_mat));
 	CUDA_CHECK_RETURN(cudaMemcpy(d_sig_mat, sig_mat, size_sig_mat, cudaMemcpyHostToDevice));
+	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_sig_tmp, sizeof(double) * size_reduced * s_dim * s_dim * num_gaus));
+	CUDA_CHECK_RETURN(cudaMemset( d_sig_tmp, 0, sizeof(double) * size_reduced * s_dim * s_dim * num_gaus));
 
 	// marginals
 	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_marginals, size_n_gaus));
 	CUDA_CHECK_RETURN(cudaMemset(d_marginals, 0, size_n_gaus));
+	CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_marginals_tmp, sizeof(double) * size_reduced * num_gaus));
+	CUDA_CHECK_RETURN(cudaMemset(d_marginals_tmp, 0, sizeof(double) * size_reduced * num_gaus));
 
 	/* Use CUDA event to time kernel */
     cudaEvent_t start, stop;
@@ -520,8 +545,6 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	/* ---------------- Interative update ------------------ */
 	double change = 100;
 	int iter = 0;
-	int size_reduced = (THR_PER_BLOCK + s_size - 1) / THR_PER_BLOCK;
-	int size_reduced_sm = (THR_PER_BLOCK_SM + s_size - 1) / THR_PER_BLOCK_SM;
 
 	dim3 grid_dim(1, 1, 1);
 	dim3 block_dim(1, 1);
@@ -565,6 +588,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		std::cout << std::endl;
 		*/
 
+
 		/* compute normalization */
 		block_dim.x = (num_gaus + THR_PER_BLOCK - 1) / num_gaus;
 		block_dim.y = num_gaus;
@@ -605,12 +629,9 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		grid_dim.x = size_reduced;
 		grid_dim.y = num_gaus;
 
-		// tmp_data = (double *) malloc(sizeof(double) * grid_dim.x * grid_dim.y);
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y));
-
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		marginal_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_tmp_data, s_size, num_gaus);
+		marginal_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_marginals_tmp, s_size, num_gaus);
 
 		// Check kernel timer
 		if (use_timer)
@@ -623,16 +644,17 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		else cudaDeviceSynchronize();
 
 		/* -- check tmp data of marginals
-		CUDA_CHECK_RETURN(cudaMemcpy(tmp_data, d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y, cudaMemcpyDeviceToHost));
+		stage_marginals = (double *) malloc(sizeof(double) * grid_dim.x * grid_dim.y);
+		CUDA_CHECK_RETURN(cudaMemcpy(stage_marginals, d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y, cudaMemcpyDeviceToHost));
 		cudaDeviceSynchronize();
 		std::cout << "tmp marginals at iter = " << iter << std::endl; // PRINT
-		print_mat(tmp_data, grid_dim.y, grid_dim.x);
+		print_mat(stage_marginals, grid_dim.y, grid_dim.x);
 		std::cout << std::endl;
 		*/
 
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		marginal_single_reduction<<<num_gaus, size_reduced, sizeof(double) * size_reduced>>>(d_tmp_data, d_marginals);
+		marginal_single_reduction<<<num_gaus, size_reduced, sizeof(double) * size_reduced>>>(d_marginals_tmp, d_marginals);
 
 		// Check kernel timer
 		if (use_timer)
@@ -643,7 +665,6 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 			timer.marginal_red_sig += ker_msec;
 		}
 		else cudaDeviceSynchronize();
-		CUDA_CHECK_RETURN(cudaFree(d_tmp_data));
 
 		/* -- check marginals
 		CUDA_CHECK_RETURN(cudaMemcpy(marginals, d_marginals, size_n_gaus, cudaMemcpyDeviceToHost));
@@ -681,11 +702,10 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		grid_dim.x = size_reduced;
 		grid_dim.y = s_dim;
 		grid_dim.z = num_gaus;
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * s_dim));
 
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		mu_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_tmp_data, s_size, num_gaus, s_dim);
+		mu_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_mu_tmp, s_size, num_gaus, s_dim);
 
 		// Check kernel timer
 		if (use_timer)
@@ -703,7 +723,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_tmp_data, d_mu_mat);
+		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_mu_tmp, d_mu_mat);
 
 		// Check kernel timer
 		if (use_timer)
@@ -714,7 +734,6 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 			timer.mu_red_sig += ker_msec;
 		}
 		else cudaDeviceSynchronize();
-		cudaFree(d_tmp_data);
 
 		/* -- check mu_mat
 		CUDA_CHECK_RETURN(cudaMemcpy(mu_mat, d_mu_mat, size_mu_mat, cudaMemcpyDeviceToHost));
@@ -729,11 +748,9 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		grid_dim.y = s_dim * s_dim;
 		grid_dim.z = num_gaus;
 
-		CUDA_CHECK_RETURN(cudaMalloc( (void **) &d_tmp_data, sizeof(double) * grid_dim.x * grid_dim.y * grid_dim.z));
-
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		sigma_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_mu_mat, d_tmp_data, s_size, num_gaus, s_dim);
+		sigma_reduction<<<grid_dim, block_dim, size_shared_mem>>>(d_likelihood, d_samples, d_marginals, d_mu_mat, d_sig_tmp, s_size, num_gaus, s_dim);
 
 		// Check kernel timer
 		if (use_timer)
@@ -751,7 +768,7 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 
 		// Start kernel timer
 		if (use_timer) checkCudaErrors(cudaEventRecord(ker_start, 0));
-		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_tmp_data, d_sig_mat);
+		single_reduction<<<grid_dim, size_reduced, size_shared_mem>>>(d_sig_tmp, d_sig_mat);
 
 		// Check kernel timer
 		if (use_timer)
@@ -763,7 +780,6 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 		}
 		else cudaDeviceSynchronize();
 
-		cudaFree(d_tmp_data);
 
 		/* -- check sig_mat
 		CUDA_CHECK_RETURN(cudaMemcpy(sig_mat, d_sig_mat, size_sig_mat, cudaMemcpyDeviceToHost));
@@ -805,10 +821,12 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	CUDA_CHECK_RETURN(cudaFree(d_samples));
 
 	// likelihood
+	/*
 	CUDA_CHECK_RETURN(cudaMemcpy(likelihood, d_likelihood, size_likelihood, cudaMemcpyDeviceToHost));
 	CUDA_CHECK_RETURN(cudaFree(d_likelihood));
 	std::cout << "Likelihood:" << std::endl;
 	print_mat(likelihood, num_gaus, s_size);
+	*/
 
 	// weights
 	CUDA_CHECK_RETURN(cudaMemcpy(weights, d_weights, size_n_gaus, cudaMemcpyDeviceToHost));
@@ -819,17 +837,20 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	// mu matrix
 	CUDA_CHECK_RETURN(cudaMemcpy(mu_mat, d_mu_mat, size_mu_mat, cudaMemcpyDeviceToHost));
 	CUDA_CHECK_RETURN(cudaFree(d_mu_mat));
+	CUDA_CHECK_RETURN(cudaFree(d_mu_tmp));
 	std::cout << "Mu mat:" << std::endl;
 	print_mat(mu_mat, num_gaus, s_dim);
 
 	// sigma matrix
 	CUDA_CHECK_RETURN(cudaMemcpy(sig_mat, d_sig_mat, size_sig_mat, cudaMemcpyDeviceToHost));
 	CUDA_CHECK_RETURN(cudaFree(d_sig_mat));
+	CUDA_CHECK_RETURN(cudaFree(d_sig_tmp));
 	std::cout << "Sig mat:" << std::endl;
 	print_mat(sig_mat, num_gaus, dim_squared);
 
 	// marginals
 	CUDA_CHECK_RETURN(cudaFree(d_marginals));
+	CUDA_CHECK_RETURN(cudaFree(d_marginals_tmp));
 
 	output->mu = mu_mat;
 	output->sigma = sig_mat;
@@ -837,42 +858,6 @@ GaussianParam run_EM(double *samples, int s_size, int s_dim, int num_gaus, doubl
 	return output[0];
 }
 
-int main_no()
-{
-	int size = sizeof(double) * 3;
-	double h_x[3] = {0.3188, -1.3077, -0.4336};
-	double h_mu[3] = {0, 0, 0};
-	double h_sig[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-	double pdf;
-	double wpdf;
-	double weight = 1 / (double) 3;
-
-	double *d_x, *d_mu, *d_sig, *d_pdf, *d_wpdf, *d_weight;
-	cudaMalloc((void **)&d_x, size);
-	cudaMalloc((void **)&d_mu, size);
-	cudaMalloc((void **)&d_sig, size * 3);
-	cudaMalloc((void **)&d_pdf, sizeof(double));
-	cudaMalloc((void **)&d_wpdf, sizeof(double));
-	cudaMalloc((void **)&d_weight, sizeof(double));
-
-	cudaMemcpy(d_x, h_x, size, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_mu, h_mu, size, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_sig, h_sig, size * 3, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_weight, &weight, sizeof(double), cudaMemcpyHostToDevice);
-
-	mvnpdf_dim3<<<1, 1>>>(d_pdf, d_x, d_mu, d_sig, 1, 1);
-
-	int shared = sizeof(double) * (3 * 3 + 9 *2);
-	w_mvnpdf_dim3<<<1, 1, shared>>>(d_wpdf, d_x, d_mu, d_sig, d_weight, 1, 1);
-
-	cudaMemcpy(&pdf, d_pdf, sizeof(double), cudaMemcpyDeviceToHost);
-	cudaMemcpy(&wpdf, d_wpdf, sizeof(double), cudaMemcpyDeviceToHost);
-
-	std::cout << "pdf = " << pdf << std::endl;
-	std::cout << "wpdf = " << wpdf << std::endl;
-
-	return 0;
-}
 
 /**
  * Check the return value of the CUDA runtime API call and exit

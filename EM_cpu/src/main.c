@@ -26,11 +26,11 @@ void print_params(GaussianParam *params, int num_models, int dim)
 
 int main(int argc, char *argv[])
 {
-	const char *csv_file = "src/data/static_750.csv";
+	const char *csv_file = "src/data/static_G3_N100000.csv";
 	const int dim = 3;
-	const int size = 750;
+	const int size = 50000;
 	const int num_gaus = 3;
-	const int num_iter = 10000;
+	const int num_iter = 5000;
 	double exit_threshold = 1e-20;
 
 	// Read samples from csv file
